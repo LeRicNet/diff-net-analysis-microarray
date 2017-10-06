@@ -1,0 +1,231 @@
+---
+title: "Differential Network Analysis of Microarray Data"
+author: "Eric Prince"
+date: "10/6/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(magrittr)
+library(reshape2)
+library(dna)
+library(knitr)
+```
+
+## Introduction
+
+The presence of high-throughput genetic studies in oncology is ubiqutious today.  One avenue that is utilized is that of microarray analysis.  These assays allow researchers to investigate various states of genes in different biological settings.  One example could be the effect of a chemotherapy treated group in-vitro compared to a control group, or possibly the investigation of genetically modified cell lineages compared to their parent lines.  The resulting data is considerably large and difficult to analyze without the use of computational software.
+
+Although the dataset itself is large, the true difficulty in microarray analysis lies in how each of the genes relate to one another.  I recently came across an interesting article on [statistical frameworks for differential network analysis from microarray data]('https://www.ncbi.nlm.nih.gov/pubmed/20170493') that provided a clear and concise work-flow to derive statistical measurements for relationships between microarray data for samples in different biological states (networks).  According to Gill et al., this framework aims to answer three questions:
+
+> 1. Whether the overall modular structures of the two networks are different
+> 2. Whether the connectivity of a particular set of "interesting genes" has changed between the two networks
+> 3. Whether the connectivity of a given single gene has changed between the two networks
+
+I will first be focusing on query 3.
+
+#### Are there any single genes with different connectivity in the two networks?
+
+To explore this question, I will be using some masked data I had lying around on CDK shRNA probes in different samples of a given pathology.
+
+```{r echo=TRUE, message=FALSE}
+file_path <- "./data/CDKonCELLS_masked.csv"
+df <- read_csv(file_path)
+kable(df[c(1:10),c(1, 4, 5, 9, 14, 17)], caption = "Microarray Data Preview", align = 'c')
+```
+
+In order for the data to be processed, I need to separate the data into the two networks: control and treatment.  The resulting tables need to be oriented such that the probes are on each column, and the samples are given in each row. I will also use the clone number instead of the symbol for the probe identity.
+
+```{r echo=TRUE}
+bdf <- 
+  df %>%
+  select(CloneNumber, 
+         contains('control')) %>%
+  melt(id.vars = c('CloneNumber')) %>%
+  separate(variable,
+           into = c('CellLine', 
+                    'Rep',
+                    'Tx'),
+           sep = '_') %>%
+  select(-Tx) %>%
+  group_by(CloneNumber, CellLine) %>%
+  summarize(value = mean(value)) %>%
+  dcast(CloneNumber ~ CellLine) %>%
+  t() %>%
+  as_data_frame()
+bdf[1,] -> names(bdf)
+bdf <- bdf[c(2:4),]
+
+pdf <-
+  df %>%
+  select(CloneNumber,
+         contains('treat')) %>%
+  melt(id.vars = c('CloneNumber')) %>%
+  separate(variable,
+           into = c('CellLine', 
+                    'Rep',
+                    'Tx'),
+           sep = '_') %>%
+  select(-Tx) %>%
+  group_by(CloneNumber, CellLine) %>%
+  summarize(value = mean(value)) %>%
+  dcast(CloneNumber ~ CellLine) %>%
+  t() %>%
+  as_data_frame()
+pdf[1,] -> names(pdf)
+pdf <- pdf[c(2:4),]
+```
+
+The execution function to compare individual genes is straightforward:
+
+```{r echo = TRUE, message = FALSE, results='hide'}
+tig_results_pls <- test.individual.genes(bdf, 
+                                         pdf, 
+                                         scores = "PLS", 
+                                         rescale.scores=TRUE, 
+                                         num.permutations = 1000, 
+                                         check.networks = TRUE)
+```
+
+With the results given as:
+
+``` {r}
+summary(tig_results_pls)
+tig_results_pls <- as_data_frame(get.results(tig_results_pls))
+
+tig_results_pls <-tig_results_pls %>% 
+  rownames_to_column(var = 'CloneNumber') %>% 
+  filter(p.value <= 0.95) %>% 
+  head() %>%
+  inner_join(df, by = 'CloneNumber') %>% 
+  select(CloneNumber:Symbol)
+
+kable(tig_results_pls)
+```
+
+This can also be performed within each cell type, and not just the group as a whole.
+
+``` {r echo = TRUE, results='hide', tidy=TRUE}
+
+# CELL A
+bdf_cellA <- df %>%
+  select(CloneNumber, contains('CELLA'), contains('control')) %>%
+  t() %>%
+  as_data_frame()
+bdf_cellA[1,] -> names(bdf_cellA)
+bdf_cellA <- bdf_cellA[c(2:4),]
+
+pdf_cellA <- df %>%
+  select(CloneNumber, contains('CELLA'), contains('treat')) %>%
+  t() %>%
+  as_data_frame()
+pdf_cellA[1,] -> names(pdf_cellA)
+pdf_cellA <- pdf_cellA[c(2:4),]
+
+tig_results_cellA_pls <- test.individual.genes(
+  bdf_cellA,
+  pdf_cellA,
+  scores = "PLS",
+  rescale.scores = TRUE,
+  num.permutations = 1000,
+  check.networks = TRUE
+)
+summary(tig_results_cellA_pls)
+tig_pls_cellA_tbl <- as_data_frame(get.results(tig_results_cellA_pls))
+
+tig_pls_cellA_results <- tig_pls_cellA_tbl %>% 
+  rownames_to_column(var = 'CloneNumber') %>% 
+  filter(p.value <= 0.95) %>% 
+  head(5) %>%
+  inner_join(df, by = 'CloneNumber') %>% 
+  select(CloneNumber:Symbol)
+
+# CELL B
+bdf_cellB <- df %>%
+  select(CloneNumber, contains('CELLB'), contains('control')) %>%
+  t() %>%
+  as_data_frame()
+bdf_cellB[1,] -> names(bdf_cellB)
+bdf_cellB <- bdf_cellB[c(2:4),]
+
+pdf_cellB <- df %>%
+  select(CloneNumber, contains('CELLB'), contains('treat')) %>%
+  t() %>%
+  as_data_frame()
+pdf_cellB[1,] -> names(pdf_cellB)
+pdf_cellB <- pdf_cellB[c(2:4),]
+
+tig_results_cellB_pls <- test.individual.genes(
+  bdf_cellB,
+  pdf_cellB,
+  scores = "PLS",
+  rescale.scores = TRUE,
+  num.permutations = 1000,
+  check.networks = TRUE
+)
+summary(tig_results_cellB_pls)
+tig_pls_cellB_tbl <- as_data_frame(get.results(tig_results_cellB_pls))
+
+tig_pls_cellB_results <- tig_pls_cellB_tbl %>% 
+  rownames_to_column(var = 'CloneNumber') %>% 
+  filter(p.value <= 0.95) %>%
+  head(5) %>%
+  inner_join(df, by = 'CloneNumber') %>% 
+  select(CloneNumber:Symbol)
+
+# CELL C
+bdf_cellC <- df %>%
+  select(CloneNumber, contains('CELLC'), contains('control')) %>%
+  t() %>%
+  as_data_frame()
+bdf_cellC[1,] -> names(bdf_cellC)
+bdf_cellC <- bdf_cellC[c(2:4),]
+
+pdf_cellC <- df %>%
+  select(CloneNumber, contains('CELLC'), contains('treat')) %>%
+  t() %>%
+  as_data_frame()
+pdf_cellC[1,] -> names(pdf_cellC)
+pdf_cellC <- pdf_cellC[c(2:4),]
+
+tig_results_cellC_pls <- test.individual.genes(
+  bdf_cellC,
+  pdf_cellC,
+  scores = "PLS",
+  rescale.scores = TRUE,
+  num.permutations = 1000,
+  check.networks = TRUE
+)
+summary(tig_results_cellC_pls)
+tig_pls_cellC_tbl <- as_data_frame(get.results(tig_results_cellC_pls))
+
+tig_pls_cellC_results <- tig_pls_cellC_tbl %>% 
+  rownames_to_column(var = 'CloneNumber') %>% 
+  filter(p.value <= 0.95) %>% 
+  head(5) %>%
+  inner_join(df, by = 'CloneNumber') %>% 
+  select(CloneNumber:Symbol)
+```
+
+Now, I can join all of the data together into one table for analysis.
+
+``` {r echo = TRUE}
+tig_df <-
+  bind_rows(list(tig_results_pls,
+            tig_pls_cellA_results,
+            tig_pls_cellB_results,
+            tig_pls_cellC_results),
+            .id = "groups")
+groups_ <- c(rep('ALLCELLS', nrow(tig_results_pls)),
+             rep('CELLA', nrow(tig_pls_cellA_results)),
+             rep('CELLB', nrow(tig_pls_cellB_results)),
+             rep('CELLC', nrow(tig_pls_cellC_results)))
+tig_df$groups <- groups_
+kable(tig_df, align = 'c',
+      col.names = c('Groups', 'Clone Number', 'Abs. Distance', 'P-Value', 'Sequence', 'GeneID', 'Symbol'),
+      caption = 'Statistical Summary of Network Analysis')
+```
+
+As can be seen in the summary table above, there were a couple of samples that had significant association of CDK4 with respect to control and treatment groups.  Interestingly, the CELLB probes reported a distance of zero which was in contrast to my unmasked dataset analysis.  This leads me to believe that I may have included an incorrect data pairing in copying my work over to this document.
